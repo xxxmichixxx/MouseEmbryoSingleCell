@@ -299,7 +299,7 @@ dev.off()
 
 ```
 
-#logFC heatmap without filtering, different color for neuronal and endodermal, clustered seperatly, with gene symbol and uniprot function insde
+#logFC heatmap without filtering, different color for neuronal and endodermal, clustered seperatly, with gene symbol and uniprot function insde 
 
 ```{r}
 row.names(summed.filtered) <- paste(summed.filtered$SYMBOL,summed.filtered$Uniprot_function)
