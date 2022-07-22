@@ -1,0 +1,504 @@
+---
+title: "mouse gastrulation"
+output: html_notebook
+---
+ 
+
+```{r}
+suppressPackageStartupMessages({
+#library(MouseGastrulationData)
+library(SingleCellExperiment)
+    library(BiocParallel)
+    library(DropletUtils)
+library(scater)
+library(scran)
+library(patchwork)
+library(pheatmap)
+library(EnsDb.Mmusculus.v79)  
+library(viridis)
+  library(magrittr)
+  library(dplyr)
+  library(ComplexHeatmap)
+  library(circlize)
+})
+set.seed(100)
+```
+
+
+#load gastrulation data from E8.0 and 8.5
+
+```{r}
+
+#load cell ranger output
+fnames <- c(WT_E85 = "../E8.5_WT_Grosswendt")
+sce <- read10xCounts(fnames, BPPARAM = MulticoreParam(length(fnames)))
+
+#load cell annotation
+cell_annot <- read.table("../E8.5_WT_Grosswendt/cell_states.txt",sep="\t",header=TRUE)
+
+#remove cells that have no annotation
+is_annot <- which(colData(sce)$Barcode %in% cell_annot$BC)
+sce <- sce[,is_annot]
+
+#add cell annotations to col data
+sce_colData <- left_join(data.frame(colData(sce)),cell_annot,by=c("Barcode" = "BC"))
+colData(sce)$Embryo <- sce_colData$Embryo
+colData(sce)$Sex <- sce_colData$Sex
+colData(sce)$Lineage <- sce_colData$Lineage
+colData(sce)$Cell_state <- sce_colData$Cell.state
+
+  
+#add logcounts
+sce <- logNormCounts(sce)
+
+#annotate cell types as neuronal, mesodermal, endodermal,ectodermal
+table(sce$Lineage)
+table(sce$Cell_state[sce$Lineage=="Eecto"])
+table(sce$Cell_state[sce$Lineage=="Eendo"])
+table(sce$Cell_state[sce$Lineage=="Emeso"])
+
+sce$NM <-  ifelse(sce$Lineage =="Emeso","mesodermal",
+                        ifelse(sce$Lineage =="Eendo","endodermal",
+                                       ifelse(sce$Cell_state==1 | sce$Cell_state==11 | sce$Cell_state==24 | sce$Cell_state==39 | sce$Cell_state == 33 | sce$Cell_state == 35 ,"neuronal",
+                                              ifelse(sce$Cell_state == 10 | sce$Cell_state == 16, "ectodermal",
+                                                  "other"))))
+
+table(sce$NM)
+
+```
+
+
+# load Bra-chip node genes
+
+```{r}
+
+node.genes <- readRDS("../fig6_with_Uniprot.rds")
+View(node.genes)
+
+# correct Gata2 gene
+node.genes$Lineage[grep("Gata2",node.genes$gene_name)] <- c("Lineage2")
+
+#select the genes that are TFs, have a node info, and a mouse gene ID
+node.genes2 <- node.genes[!is.na(node.genes$Lineage) & grepl("ENS",node.genes$Gene) & node.genes$TF=="TF",]
+View(node.genes2)
+
+#correct FoxA and Tbx2/3 genes according to trees
+node.genes2$Lineage[c(grep("Foxa",node.genes2$gene_name),grep("foxa",node.genes2$gene_name))] <- c("Lineage2","Lineage2")
+Foxa1 <- c("Foxa1","ENSMUSG00000035451","TF","Lineage2","NA","NA","NA")
+node.genes2 <- rbind(node.genes2,Foxa1)
+
+node.genes2$Lineage[grep("Tbx2",node.genes2$gene_name)] <- c("Lineage2","Lineage2")
+
+
+
+#remove duplicated ones
+length(unique(node.genes2$Gene))
+dup.genes <- node.genes2$Gene[duplicated(node.genes2$Gene)]
+View(node.genes2[node.genes2$Gene %in% dup.genes,])
+
+remove.rows <- numeric(0)
+for (i in seq_along(dup.genes)){
+  remove.rows <- c(remove.rows,max(which(node.genes2$Gene==dup.genes[i])))
+}
+node.genes3 <- node.genes2[-remove.rows,]
+```
+
+# select node genes from sce object
+
+```{r}
+node1.inx <- which(rowData(sce)$ID %in% node.genes3$Gene[node.genes3$Lineage=="Lineage1"])
+rowData(sce)[node1.inx,]
+
+node2.inx <- which(rowData(sce)$ID %in% node.genes3$Gene[node.genes3$Lineage=="Lineage2"])
+node3.inx <- which(rowData(sce)$ID %in% node.genes3$Gene[node.genes3$Lineage=="Lineage3"])
+node4.inx <- which(rowData(sce)$ID %in% node.genes3$Gene[node.genes3$Lineage=="Lineage4"])
+node5.inx <- which(rowData(sce)$ID %in% node.genes3$Gene[node.genes3$Lineage=="Lineage5"])
+
+```
+
+
+# take the sum across logcounts per node and make violin plots across cells per node
+
+```{r}
+#average the logcounts acorss all genes in a node
+node1.logcts <- colSums(logcounts(sce)[node1.inx,])
+node2.logcts <- colSums(logcounts(sce)[node2.inx,])
+node3.logcts <- colSums(logcounts(sce)[node3.inx,])
+node4.logcts <- colSums(logcounts(sce)[node4.inx,])
+node5.logcts <- colSums(logcounts(sce)[node5.inx,])
+
+
+#combine in a df
+nodes.df <- data.frame(celltype=as.character(sce$Cell_state),germ_layer=sce$NM,node1=node1.logcts,node2=node2.logcts,node3=node3.logcts,node4=node4.logcts,node5=node5.logcts)
+
+p1 <- ggplot(nodes.df,aes(x=celltype,y=node1,fill=germ_layer)) + geom_violin() + theme_bw() + coord_flip() + scale_fill_manual(values=c("#f03b20","#feb24c","#984ea3","#e6f5d0","#7bccc4","#a6cee3","#fde0ef"))
+p2 <- ggplot(nodes.df,aes(x=celltype,y=node2,fill=germ_layer)) + geom_violin() + theme_bw() + coord_flip() + scale_fill_manual(values=c("#f03b20","#feb24c","#984ea3","#e6f5d0","#7bccc4","#a6cee3","#fde0ef"))
+p3 <- ggplot(nodes.df,aes(x=celltype,y=node3,fill=germ_layer)) + geom_violin() + theme_bw() + coord_flip() + scale_fill_manual(values=c("#f03b20","#feb24c","#984ea3","#e6f5d0","#7bccc4","#a6cee3","#fde0ef"))
+p4 <- ggplot(nodes.df,aes(x=celltype,y=node4,fill=germ_layer)) + geom_violin() + theme_bw() + coord_flip() + scale_fill_manual(values=c("#f03b20","#feb24c","#984ea3","#e6f5d0","#7bccc4","#a6cee3","#fde0ef"))
+p5 <- ggplot(nodes.df,aes(x=celltype,y=node5,fill=germ_layer)) + geom_violin() + theme_bw() + coord_flip() + scale_fill_manual(values=c("#f03b20","#feb24c","#984ea3","#e6f5d0","#7bccc4","#a6cee3","#fde0ef"))
+#+ geom_boxplot(width=0.1, color="white", alpha=0.5)
+p1 + p2 + p3 + p4 + p5
+ggsave("../Grosswendt_node_genes_sum_logcounts_per_celltype_violonplots_v6_FoxA_Tbx23_Gata2_corrected_ectoSplit.svg",device="svg",height=30,width=30)
+```
+
+
+# generate pseudo bulks per mesodermal, endodermal, and neuronal celltype
+
+```{r}
+summed <- aggregateAcrossCells(sce, 
+    id=colData(sce)[,c("NM")])
+
+#calculate normalization factor
+norm.fact <- colSums(counts(summed))/1000000
+
+counts.norm <- t(t(counts(summed))/norm.fact)
+```
+
+#make a ratio of all mesodermal vs neuronal celltypes for each gene and color them by this ratio, compare nodes
+
+```{r}
+
+inx.node.genes <- which(rowData(summed)$ID %in% node.genes3$Gene)
+summed.filtered <- data.frame(counts.norm[inx.node.genes,])
+
+
+summed.filtered$logFC_N <- log2((summed.filtered$neuronal+1)/(summed.filtered$mesodermal+1))
+summed.filtered$logFC_E <- log2((summed.filtered$endodermal+1)/(summed.filtered$mesodermal+1))
+
+summed.filtered <- cbind(summed.filtered,rowData(sce)[inx.node.genes,])
+summed.filtered <- left_join(summed.filtered,node.genes3,by=c("ID"="Gene"))
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_N)) + geom_boxplot(notch=FALSE,fill="#7bccc4") +theme_bw() + ylab("log2 neuronal/mesodermal gene expression [cpm]") + xlab("") +  scale_x_discrete(labels=c("Lineage1" = "node 1", "Lineage2" = "node 2",
+                              "Lineage3" = "node 3","Lineage4"="node 4","Lineage5"="node 5")) + theme(axis.text.x = element_text(  
+                           size=14, angle=45,vjust = 0.5),axis.text.y = element_text( size=14), axis.title.y = element_text(face="bold",size=14)) 
+
+wilcox.test(summed.filtered$logFC_N[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_N[summed.filtered$Lineage=="Lineage5"])
+wilcox.test(summed.filtered$logFC_N[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_N[summed.filtered$Lineage=="Lineage4"])
+ggsave("../Grosswendt_boxplot_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_v3_FoxA_Tbx23_Gata2_corrected_ectoSorted.svg",device = "svg",height=8,width=6)
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_E)) + geom_boxplot(notch=FALSE,fill="#feb24c") +theme_bw() + ylab("log2 endodermal/mesodermal gene expression [cpm]") + xlab("") +  scale_x_discrete(labels=c("Lineage1" = "node 1", "Lineage2" = "node 2",
+                              "Lineage3" = "node 3","Lineage4"="node 4","Lineage5"="node 5")) + theme(axis.text.x = element_text(  
+                           size=14, angle=45,vjust = 0.5),axis.text.y = element_text( size=14), axis.title.y = element_text(face="bold",size=14)) 
+wilcox.test(summed.filtered$logFC_E[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E[summed.filtered$Lineage=="Lineage5"])
+wilcox.test(summed.filtered$logFC_E[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E[summed.filtered$Lineage=="Lineage4"])
+ggsave("../Grosswendt_boxplot_endodermal_mesodermal_FC_Lineages1-5_not_cpm_filtered_v3_FoxA_Tbx23_Gata2_corrected_ectoSorted.svg",device = "svg",height=8,width=6)
+
+
+```
+
+# cpm heatmap without filtering
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$Symbol
+
+library(circlize)
+col_fun = colorRamp2(c(0, max(log2(summed.filtered[,1:5]+1))), c("white", "darkblue"))
+svg("../Grosswendt_heatmap_neuronal_mesodermal_cpms_Lineages1-5_Foxa_Tbx23_Gata2_corrected_ectoSorted.svg",height=18,width=8)
+Heatmap(log2(summed.filtered[,1:5]+1),cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="log2 cpm",cluster_row_slices = FALSE)
+dev.off()
+
+```
+
+#logFC heatmap without filtering, different color for neuronal and endodermal
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$Symbol
+
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#7bccc4"))
+summed.filteredlogFC <- matrix(summed.filtered[,8])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#feb24c"))
+summed.filteredlogFC <- matrix(summed.filtered[,9])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H2 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="logFC endodermal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_with_endoderm_2colors.svg",height=18,width=8)
+H1 + H2
+dev.off()
+```
+
+#logFC heatmap without filtering, different color for neuronal and endodermal, clustered by combined endo and neuronal
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$Symbol
+
+library(cluster)
+summed.filteredlogFCall <- summed.filtered[,8:9]
+dist.eu <- dist(summed.filteredlogFCall)
+clustering.all <- hclust(dist.eu)
+row.ordering <- clustering.all[[3]]
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#7bccc4"))
+summed.filteredlogFC <- matrix(summed.filtered[,8])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+summed.filteredlogFC <- summed.filteredlogFC[row.ordering,]
+H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= FALSE, split = summed.filtered$Lineage[row.ordering],col=col_fun,name="logFC neuronal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#feb24c"))
+summed.filteredlogFC <- matrix(summed.filtered[,9])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+summed.filteredlogFC <- summed.filteredlogFC[row.ordering,]
+H2 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= FALSE, split = summed.filtered$Lineage[row.ordering],col=col_fun,name="logFC endodermal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_with_endoderm_2colors_euclidian_clustering.svg",height=18,width=8)
+H1 + H2
+dev.off()
+```
+
+#logFC heatmap without filtering, different color for neuronal and endodermal, clustered seperatly
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$Symbol
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#7bccc4"))
+summed.filteredlogFC <- matrix(summed.filtered[,6])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
+              cluster_row_slices = FALSE,show_row_dend = FALSE,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+            gp = gpar(col = "lightgrey", fill = NA)
+        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+        
+})
+
+summed.filtered$Uniprot_colors <- ifelse(summed.filtered$Uniprot_function =="Mesodermal","black","red")
+H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
+              cluster_row_slices = FALSE,show_row_dend = FALSE,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = summed.filtered$Uniprot_colors, fill = NA))
+        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+      
+
+})
+
+
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#feb24c"))
+summed.filteredlogFC <- matrix(summed.filtered[,7])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H2 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC endodermal/mesodermal",show_row_names = FALSE,
+              cluster_row_slices = FALSE,show_row_dend = FALSE,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = "lightgrey", fill = NA))
+        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+})
+
+svg("../Grosswendt_heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_2colors_v2_ectoSorted.svg",height=19,width=3.7)
+H1
+dev.off()
+
+svg("../Grosswendt_heatmap_endodermal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_2colors_v2_ectoSorted.svg",height=19,width=3.7)
+H2
+dev.off()
+
+```
+
+#logFC heatmap without filtering, different color for neuronal and endodermal, clustered seperatly, with gene symbol (and uniprot function) insde 
+
+```{r}
+#row.names(summed.filtered) <- paste(summed.filtered$SYMBOL,summed.filtered$Uniprot_function)
+#row.names(summed.filtered) <- gsub("NA","",row.names(summed.filtered))
+
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#7bccc4"))
+summed.filteredlogFC <- matrix(summed.filtered[,8])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
+              cluster_row_slices = FALSE,show_row_dend = FALSE,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                
+                  grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = "lightgrey", fill = NA))  
+               
+        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+        
+})
+
+
+
+col_fun = colorRamp2(c(-2,0, 2), c("#984ea3","white", "#feb24c"))
+summed.filteredlogFC <- matrix(summed.filtered[,9])
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+H2 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC endodermal/mesodermal",show_row_names = FALSE,
+              cluster_row_slices = FALSE,show_row_dend = FALSE,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = "lightgrey", fill = NA))
+        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+})
+
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_2colors_v2_genenamesonly.svg",height=19,width=4)
+H1
+dev.off()
+
+svg("../heatmap_endodermal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_Gata2_corrected_2colors_v2_genenamesonly.svg",height=19,width=4)
+H2
+dev.off()
+
+```
+
+#logFC heatmap without filtering 
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+col_fun = colorRamp2(c(-2,0, 2), c("#d8b365","white", "#5ab4ac"))
+#summed.filteredlogFC <- matrix(summed.filtered[,8])
+summed.filteredlogFC <- summed.filtered[,8:9]
+
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_Foxa_Tbx23_corrected_with_endoderm.svg",height=18,width=6)
+Heatmap(summed.filteredlogFC,cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="logFC",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+dev.off()
+```
+
+#logFC heatmap with filtering 
+
+```{r}
+row.names(summed.filtered2) <- summed.filtered2$SYMBOL
+col_fun = colorRamp2(c(-2,0, 2), c("#d8b365","white", "#5ab4ac"))
+summed.filtered2logFC <- matrix(summed.filtered2[,8])
+row.names(summed.filtered2logFC) <- row.names(summed.filtered2)
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5.svg",height=18,width=6)
+Heatmap(summed.filtered2logFC,cluster_columns = FALSE,split = summed.filtered2$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+dev.off()
+```
+
+
+
+
+
+# generate pseudo bulks per mesoerm and neuronal celltype, split by embryo stage
+
+```{r}
+summed <- aggregateAcrossCells(sce, 
+    id=colData(sce)[,c("NM","stage")])
+
+#calculate normalization factor
+norm.fact <- colSums(counts(summed))/1000000
+
+counts.norm <- t(t(counts(summed))/norm.fact)
+```
+
+#make a ratio of all mesodermal vs neuronal celltypes for each gene and color them by this ratio, compare nodes
+
+```{r}
+
+inx.node.genes <- which(rowData(summed)$ENSEMBL %in% node.genes3$Gene)
+summed.filtered <- data.frame(counts.norm[inx.node.genes,])
+colnames(summed.filtered) <- paste(summed$NM,summed$stage,sep="_")
+
+summed.filtered$logFC_E8.0 <- log2((summed.filtered$neuronal_E8.0 + 1)/(summed.filtered$mesodermal_E8.0 + 1))
+summed.filtered$logFC_E8.5 <- log2((summed.filtered$neuronal_E8.5 + 1)/(summed.filtered$mesodermal_E8.5 + 1))
+
+summed.filtered <- cbind(summed.filtered,rowData(sce)[inx.node.genes,])
+summed.filtered <- left_join(summed.filtered,node.genes3,by=c("ENSEMBL"="Gene"))
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_E8.0)) + geom_boxplot(notch=FALSE,fill="#7bccc4") +theme_bw()
+wilcox.test(summed.filtered$logFC_E8.0[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E8.0[summed.filtered$Lineage=="Lineage5"])
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_E8.5)) + geom_boxplot(notch=FALSE,fill="#7bccc4") +theme_bw()
+wilcox.test(summed.filtered$logFC_E8.5[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E8.5[summed.filtered$Lineage=="Lineage5"])
+
+```
+
+
+
+# cpm heatmap without filtering
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+
+library(circlize)
+col_fun = colorRamp2(c(0, max(log2(summed.filtered[,1:4]+1))), c("white", "darkblue"))
+svg("../heatmap_neuronal_mesodermal_cpms_Lineages1-5_stage_split.svg",height=18,width=14)
+Heatmap(log2(summed.filtered[,1:13]+1),cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="log2 cpm",cluster_row_slices = FALSE)
+dev.off()
+
+```
+
+#logFC heatmap without filtering 
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+col_fun = colorRamp2(c(-2,0, 2), c("#d8b365","white", "#5ab4ac"))
+summed.filteredlogFC <- as.matrix(summed.filtered[,14:15])
+
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_stage_split.svg",height=18,width=8)
+Heatmap(summed.filteredlogFC,cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+dev.off()
+```
+
+
+# generate pseudo bulks per mesoerm and neuronal celltype, split by sample
+
+```{r}
+summed <- aggregateAcrossCells(sce, 
+    id=colData(sce)[,c("NM","sample")])
+
+#calculate normalization factor
+norm.fact <- colSums(counts(summed))/1000000
+
+counts.norm <- t(t(counts(summed))/norm.fact)
+```
+
+#make a ratio of all mesodermal vs neuronal celltypes for each gene and color them by this ratio, compare nodes
+
+```{r}
+
+inx.node.genes <- which(rowData(summed)$ENSEMBL %in% node.genes3$Gene)
+summed.filtered <- data.frame(counts.norm[inx.node.genes,])
+colnames(summed.filtered) <- paste(summed$NM,summed$sample,sep="_")
+
+summed.filtered$logFC_33 <- log2((summed.filtered$neuronal_33 + 1)/(summed.filtered$mesodermal_33 + 1))
+summed.filtered$logFC_34 <- log2((summed.filtered$neuronal_34 + 1)/(summed.filtered$mesodermal_34 + 1))
+summed.filtered$logFC_35 <- log2((summed.filtered$neuronal_35 + 1)/(summed.filtered$mesodermal_35 + 1))
+summed.filtered$logFC_36 <- log2((summed.filtered$neuronal_36 + 1)/(summed.filtered$mesodermal_36 + 1))
+summed.filtered$logFC_37 <- log2((summed.filtered$neuronal_37 + 1)/(summed.filtered$mesodermal_37 + 1))
+
+summed.filtered <- cbind(summed.filtered,rowData(sce)[inx.node.genes,])
+summed.filtered <- left_join(summed.filtered,node.genes3,by=c("ENSEMBL"="Gene"))
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_E8.0)) + geom_boxplot(notch=FALSE,fill="#7bccc4") +theme_bw()
+wilcox.test(summed.filtered$logFC_E8.0[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E8.0[summed.filtered$Lineage=="Lineage5"])
+
+ggplot(summed.filtered,aes(x=Lineage,y=logFC_E8.5)) + geom_boxplot(notch=FALSE,fill="#7bccc4") +theme_bw()
+wilcox.test(summed.filtered$logFC_E8.5[summed.filtered$Lineage=="Lineage2"],summed.filtered$logFC_E8.5[summed.filtered$Lineage=="Lineage5"])
+
+```
+
+
+
+# cpm heatmap without filtering
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+
+library(circlize)
+col_fun = colorRamp2(c(0, max(log2(summed.filtered[,1:4]+1))), c("white", "darkblue"))
+svg("../heatmap_neuronal_mesodermal_cpms_Lineages1-5_sample_split.svg",height=18,width=25)
+Heatmap(log2(summed.filtered[,1:31]+1),cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="log2 cpm",cluster_row_slices = FALSE)
+dev.off()
+
+```
+
+#logFC heatmap without filtering 
+
+```{r}
+row.names(summed.filtered) <- summed.filtered$SYMBOL
+col_fun = colorRamp2(c(-2,0, 2), c("#d8b365","white", "#5ab4ac"))
+summed.filteredlogFC <- as.matrix(summed.filtered[,32:36])
+
+row.names(summed.filteredlogFC) <- row.names(summed.filtered)
+svg("../heatmap_neuronal_mesodermal_FC_Lineages1-5_not_cpm_filtered_sample_split.svg",height=18,width=12)
+Heatmap(summed.filteredlogFC,cluster_columns = FALSE,split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = TRUE,cluster_row_slices = FALSE,show_row_dend = FALSE)
+dev.off()
+```
+
