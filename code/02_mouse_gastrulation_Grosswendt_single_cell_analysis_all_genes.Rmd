@@ -259,21 +259,20 @@ row.names(summed.filteredlogFC) <- row.names(summed.filtered)
 H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
               cluster_row_slices = FALSE,show_row_dend = FALSE,
               cell_fun = function(j, i, x, y, width, height, fill) {
-            gp = gpar(col = "lightgrey", fill = NA)
+                grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = "lightgrey", fill = NA))
         grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
         
 })
 
-summed.filtered$Uniprot_colors <- ifelse(summed.filtered$Uniprot_function =="Mesodermal","black","red")
-H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
-              cluster_row_slices = FALSE,show_row_dend = FALSE,
-              cell_fun = function(j, i, x, y, width, height, fill) {
-                grid.rect(x = x, y = y, width = width, height = height, 
-            gp = gpar(col = summed.filtered$Uniprot_colors, fill = NA))
-        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
-      
-
-})
+#summed.filtered$Uniprot_colors <- ifelse(summed.filtered$Uniprot_function #=="Mesodermal","black","red")
+#H1 <- Heatmap(summed.filteredlogFC,cluster_columns = FALSE,cluster_rows= TRUE, split = summed.filtered$Lineage,col=col_fun,name="logFC neuronal/mesodermal",show_row_names = FALSE,
+#              cluster_row_slices = FALSE,show_row_dend = FALSE,
+#              cell_fun = function(j, i, x, y, width, height, fill) {
+#                grid.rect(x = x, y = y, width = width, height = height, 
+#            gp = gpar(col = summed.filtered$Uniprot_colors, fill = NA))
+#        grid.text( row.names(summed.filteredlogFC)[i], x=x, y=y, gp = gpar(fontsize = 10))
+#})
 
 
 
